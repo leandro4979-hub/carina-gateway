@@ -62,3 +62,32 @@ python3 -m unittest -v test_model_router.py
 ```
 
 The first batch tests success, 429/5xx fallback, fatal 401 handling, verification failures, aggregate retryable failures, and capability routing.
+
+
+## Persistent HTTP gateway
+
+The branch also contains a standard-library HTTP server:
+
+```bash
+export CARINA_GATEWAY_TOKEN=dev-local-secret
+export GITHUB_WEBHOOK_SECRET=dev-github-secret
+python3 carina_server.py
+```
+
+Default listener:
+
+```text
+http://127.0.0.1:51001
+```
+
+Health check:
+
+```bash
+curl -i http://127.0.0.1:51001/health
+```
+
+Server tests:
+
+```bash
+python3 -m unittest -v test_carina_server.py
+```
