@@ -16,6 +16,12 @@ import hashlib
 import sys
 from uuid import uuid4
 
+# Configure the module BEFORE importing github_carina_gateway.
+# github_carina_gateway reads these environment values at import time.
+WEBHOOK_SECRET = "super-secret-key"
+os.environ["GITHUB_WEBHOOK_SECRET"] = WEBHOOK_SECRET
+os.environ["MOCK_SIG_FAILURE"] = "0"
+
 # Import the gateway components
 try:
     from github_carina_gateway import (
@@ -30,13 +36,6 @@ try:
 except ImportError:
     print("Error: Could not import from github_carina_gateway. Make sure the file exists.")
     sys.exit(1)
-
-# Configuration for the tests
-WEBHOOK_SECRET = "super-secret-key"
-os.environ["GITHUB_WEBHOOK_SECRET"] = WEBHOOK_SECRET
-
-# Disable mock signature failures for real testing
-os.environ["MOCK_SIG_FAILURE"] = "0"
 
 
 def generate_signature(payload_bytes: bytes, secret: str) -> str:
@@ -70,11 +69,9 @@ def run_full_pipeline_test(name: str, actor: str, event_type: str, action: str,
     print(f"  Action: {action}")
     print(f"  Repo: {repo}")
     
-    # Build the payload
     payload_bytes = build_mock_payload(actor, event_type, action, repo)
     delivery_id = str(uuid4())[:8]
     
-    # Generate signature (use wrong secret if testing failure)
     secret_to_use = "wrong-secret" if force_sig_fail else WEBHOOK_SECRET
     signature = generate_signature(payload_bytes, secret_to_use)
     
@@ -116,7 +113,7 @@ def run_full_pipeline_test(name: str, actor: str, event_type: str, action: str,
     except DispatchError as exc:
         print(f"\n  ⚠ Dispatch Error (no route found)")
         print(f"    Error: {exc}")
-        return True  # This is expected for unknown event types
+        return True
         
     except Exception as exc:
         print(f"\n  ✗ Unexpected Error")
@@ -171,9 +168,6 @@ if __name__ == "__main__":
     
     test_results = []
     
-    # =========================================================================
-    # SECTION 1: Full pipeline tests (signature → parsing → security → dispatch)
-    # =========================================================================
     print("\n" + "="*80)
     print("SECTION 1: Full Pipeline Tests")
     print("="*80)
@@ -267,9 +261,6 @@ if __name__ == "__main__":
         )
     )
     
-    # =========================================================================
-    # SECTION 2: Direct security rule evaluation tests
-    # =========================================================================
     print("\n" + "="*80)
     print("SECTION 2: Security Rule Evaluation Tests")
     print("="*80)
@@ -354,9 +345,6 @@ if __name__ == "__main__":
         )
     )
     
-    # =========================================================================
-    # Test Summary
-    # =========================================================================
     print("\n" + "="*80)
     print("TEST SUMMARY")
     print("="*80)
