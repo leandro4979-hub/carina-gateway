@@ -153,6 +153,25 @@ class CARINAServerTests(unittest.TestCase):
             )
         self.assertEqual(status, 401)
 
+    def test_oversized_request(self):
+        router = StaticRouter(
+            LLMResponse(provider="fake", model="fake-model", text="ok", raw={})
+        )
+        with running_server(router) as port:
+            status, data = request(
+                port,
+                "POST",
+                "/v1/chat/completions",
+                b"",
+                {
+                    "Authorization": "Bearer test-token",
+                    "Content-Type": "application/json",
+                    "Content-Length": str(1_048_577),
+                },
+            )
+        self.assertEqual(status, 413)
+        self.assertEqual(data["error"], "request_too_large")
+
     def test_malformed_json(self):
         router = StaticRouter(
             LLMResponse(provider="fake", model="fake-model", text="ok", raw={})
