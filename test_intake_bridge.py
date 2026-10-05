@@ -1,3 +1,6 @@
+import hashlib
+import hmac
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -121,6 +124,27 @@ class IntakeBridgeTests(unittest.TestCase):
             ledger = gateway.SQLiteIntakeLedger(Path(directory) / "intake.sqlite3")
             with self.assertRaises(gateway.IntakeAuthorizationError):
                 ledger.append(payload)
+
+    def test_handle_event_accepts_explicit_webhook_secret(self):
+        secret = "receiver-secret"
+        body = json.dumps(issue_payload("[Idea]: Explicit secret")).encode("utf-8")
+        signature = "sha256=" + hmac.new(
+            secret.encode("utf-8"), body, hashlib.sha256
+        ).hexdigest()
+        captured = []
+
+        result = gateway.handle_github_event(
+            event_type="issues",
+            delivery_id="delivery-secret",
+            raw_signature=signature,
+            raw_body=body,
+            intake_sink=captured.append,
+            webhook_secret=secret,
+        )
+
+        self.assertEqual(result.decision, gateway.SecurityDecision.ALLOW)
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(captured[0]["phase"], "INTENT")
 
     def test_non_intake_issue_is_ignored(self):
         event = gateway.ParsedEvent(
