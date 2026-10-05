@@ -24,9 +24,11 @@ import hmac
 import json
 import logging
 import os
+import sqlite3
 import time
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -590,6 +592,86 @@ def append_intake_record(
     payload = serialize_intake_record(record)
     sink(payload)
     return payload
+
+
+def _validate_serialized_intake_payload(payload: dict[str, Any]) -> None:
+    phase = str(payload.get("phase", ""))
+    authorization = payload.get("authorization")
+    if phase not in _ALLOWED_INTAKE_PHASES:
+        raise IntakeAuthorizationError(
+            f"Serialized intake phase '{phase}' is forbidden."
+        )
+    if payload.get("read_only") is not True:
+        raise IntakeAuthorizationError("Serialized intake must be read-only.")
+    if not isinstance(authorization, dict):
+        raise IntakeAuthorizationError("Serialized intake authorization metadata is required.")
+    if authorization.get("granted") is not False:
+        raise IntakeAuthorizationError("Serialized intake cannot grant authorization.")
+    if authorization.get("authority") != "CARINA_ONLY":
+        raise IntakeAuthorizationError("Serialized intake authority must be CARINA_ONLY.")
+
+
+class SQLiteIntakeLedger:
+    """
+    Durable, append-only storage for GitHub intake evidence.
+
+    This ledger is deliberately separate from CARINA execution state. Its
+    schema can store only INTENT, EVIDENCE, and DECISION records. Re-delivered
+    GitHub events are idempotent through the record_id primary key.
+    """
+
+    def __init__(self, path: str | Path):
+        self.path = Path(path).expanduser()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._initialize()
+
+    def _connect(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self.path)
+        connection.row_factory = sqlite3.Row
+        return connection
+
+    def _initialize(self) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS github_intake_records (
+                    record_id TEXT PRIMARY KEY,
+                    phase TEXT NOT NULL
+                        CHECK (phase IN ('INTENT', 'EVIDENCE', 'DECISION')),
+                    payload_json TEXT NOT NULL,
+                    created_at REAL NOT NULL
+                )
+                """
+            )
+
+    def append(self, payload: dict[str, Any]) -> bool:
+        _validate_serialized_intake_payload(payload)
+        record_id = str(payload.get("record_id", "")).strip()
+        if not record_id:
+            raise PayloadParseError("Serialized intake record_id is required.")
+
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT OR IGNORE INTO github_intake_records
+                    (record_id, phase, payload_json, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (record_id, payload["phase"], encoded, time.time()),
+            )
+            return cursor.rowcount == 1
+
+    def read_all(self) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT payload_json
+                FROM github_intake_records
+                ORDER BY created_at ASC, record_id ASC
+                """
+            ).fetchall()
+        return [json.loads(row["payload_json"]) for row in rows]
 
 
 # ---------------------------------------------------------------------------
