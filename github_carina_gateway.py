@@ -76,6 +76,10 @@ class DispatchError(GatewayError):
     """The CARINA dispatcher failed to route this event."""
 
 
+class IntakeAuthorizationError(GatewayError):
+    """The intake layer attempted to represent or grant execution authority."""
+
+
 # ---------------------------------------------------------------------------
 # 3. Data models
 # ---------------------------------------------------------------------------
@@ -85,6 +89,28 @@ class SecurityDecision(str, Enum):
     ALLOW = "ALLOW"
     APPROVAL_REQUIRED = "APPROVAL_REQUIRED"
     DENY = "DENY"
+
+
+class IntakePhase(str, Enum):
+    INTENT = "INTENT"
+    EVIDENCE = "EVIDENCE"
+    DECISION = "DECISION"
+
+
+@dataclass(frozen=True)
+class IntakeRecord:
+    record_id: str
+    phase: IntakePhase | str
+    repo_full_name: str
+    issue_number: int
+    issue_title: str
+    issue_body: str
+    issue_url: str
+    actor: str
+    delivery_id: str
+    read_only: bool = True
+    authorization_granted: bool = False
+    authorization_authority: str = "CARINA_ONLY"
 
 
 @dataclass(frozen=True)
@@ -190,6 +216,32 @@ SECURITY_RULES: list[tuple[str, str, str, str, SecurityDecision, str]] = [
         "*",
         SecurityDecision.ALLOW,
         "Push event allowed.",
+    ),
+    # GitHub issue intake is coordination/evidence only. These rules allow
+    # normalization into read-only CARINA intake records, never authorization.
+    (
+        "RULE-008",
+        "*",
+        "issues",
+        "opened",
+        SecurityDecision.ALLOW,
+        "Issue opened event may enter the read-only intake ledger.",
+    ),
+    (
+        "RULE-009",
+        "*",
+        "issues",
+        "edited",
+        SecurityDecision.ALLOW,
+        "Issue edits may add read-only evidence.",
+    ),
+    (
+        "RULE-010",
+        "*",
+        "issues",
+        "reopened",
+        SecurityDecision.ALLOW,
+        "Reopened intake issue may be re-evaluated.",
     ),
     # Deny everything else by default.
     (
@@ -397,7 +449,151 @@ def parse_event(request: InboundRequest) -> ParsedEvent:
 
 
 # ---------------------------------------------------------------------------
-# 7. CARINA dispatcher
+# 7. Read-only GitHub intake bridge
+# ---------------------------------------------------------------------------
+
+_ALLOWED_INTAKE_PHASES = frozenset(phase.value for phase in IntakePhase)
+
+
+def _phase_value(phase: IntakePhase | str) -> str:
+    return phase.value if isinstance(phase, IntakePhase) else str(phase)
+
+
+def validate_intake_record(record: IntakeRecord) -> IntakeRecord:
+    """
+    Enforce the authorization ceiling for GitHub-derived intake records.
+
+    This layer may represent INTENT, EVIDENCE, or DECISION only. It cannot
+    create AUTHORIZED state, grant authority, or become writable execution
+    state. CARINA remains the sole authority for execution transitions.
+    """
+    phase = _phase_value(record.phase)
+
+    if phase not in _ALLOWED_INTAKE_PHASES:
+        raise IntakeAuthorizationError(
+            f"GitHub intake phase '{phase}' is forbidden. "
+            "Only INTENT, EVIDENCE, and DECISION are accepted."
+        )
+    if not record.read_only:
+        raise IntakeAuthorizationError("GitHub intake records must remain read-only.")
+    if record.authorization_granted:
+        raise IntakeAuthorizationError(
+            "GitHub intake cannot grant execution authorization."
+        )
+    if record.authorization_authority != "CARINA_ONLY":
+        raise IntakeAuthorizationError(
+            "Authorization authority must remain CARINA_ONLY."
+        )
+
+    return record
+
+
+def map_issue_to_intake_record(event: ParsedEvent) -> IntakeRecord | None:
+    """
+    Normalize portfolio issue lifecycle events into a read-only CARINA record.
+
+    Mapping:
+      [Idea] opened/reopened -> INTENT
+      [Idea] edited          -> EVIDENCE
+      [Collaboration]        -> DECISION
+
+    Proof records belong to verification, not intake, and ordinary issues are
+    ignored by this bridge.
+    """
+    if event.event_type != "issues":
+        return None
+
+    issue = event.payload.get("issue")
+    if not isinstance(issue, dict):
+        raise PayloadParseError(
+            f"Issues event is missing an issue object. delivery={event.delivery_id}"
+        )
+
+    title = str(issue.get("title", "")).strip()
+    action = event.action
+
+    if title.startswith("[Idea]:"):
+        if action in ("opened", "reopened"):
+            phase = IntakePhase.INTENT
+        elif action == "edited":
+            phase = IntakePhase.EVIDENCE
+        else:
+            return None
+    elif title.startswith("[Collaboration]:"):
+        if action not in ("opened", "edited", "reopened"):
+            return None
+        phase = IntakePhase.DECISION
+    else:
+        return None
+
+    try:
+        issue_number = int(issue["number"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise PayloadParseError(
+            f"Intake issue number is missing or invalid. delivery={event.delivery_id}"
+        ) from exc
+
+    record = IntakeRecord(
+        record_id=(
+            f"github:{event.repo_full_name}:issue:{issue_number}:"
+            f"{event.delivery_id}"
+        ),
+        phase=phase,
+        repo_full_name=event.repo_full_name,
+        issue_number=issue_number,
+        issue_title=title,
+        issue_body=str(issue.get("body") or ""),
+        issue_url=str(issue.get("html_url") or ""),
+        actor=event.actor,
+        delivery_id=event.delivery_id,
+    )
+    return validate_intake_record(record)
+
+
+def serialize_intake_record(record: IntakeRecord) -> dict[str, Any]:
+    """Return the canonical ledger payload after enforcing the safety ceiling."""
+    validate_intake_record(record)
+    return {
+        "record_id": record.record_id,
+        "record_type": "github_intake",
+        "phase": _phase_value(record.phase),
+        "read_only": True,
+        "authorization": {
+            "granted": False,
+            "authority": "CARINA_ONLY",
+        },
+        "source": {
+            "provider": "github",
+            "repository": record.repo_full_name,
+            "issue_number": record.issue_number,
+            "issue_url": record.issue_url,
+            "delivery_id": record.delivery_id,
+            "actor": record.actor,
+        },
+        "content": {
+            "title": record.issue_title,
+            "body": record.issue_body,
+        },
+    }
+
+
+def append_intake_record(
+    record: IntakeRecord,
+    sink,
+) -> dict[str, Any]:
+    """
+    Append a validated intake payload through a caller-supplied ledger sink.
+
+    The sink receives evidence only. This function has no authorization or
+    execution method by design.
+    """
+    payload = serialize_intake_record(record)
+    sink(payload)
+    return payload
+
+
+# ---------------------------------------------------------------------------
+# 8. CARINA dispatcher
 # ---------------------------------------------------------------------------
 
 # Route table maps (event_type, action) to a destination queue or handler name.
@@ -407,6 +603,9 @@ DISPATCH_ROUTES: dict[tuple[str, str], str] = {
     ("pull_request", "synchronize"): "carina.queue.pr_review",
     ("push", "*"): "carina.queue.ci_trigger",
     ("repository", "publicized"): "carina.queue.security_audit",
+    ("issues", "opened"): "carina.ledger.intake_readonly",
+    ("issues", "edited"): "carina.ledger.intake_readonly",
+    ("issues", "reopened"): "carina.ledger.intake_readonly",
 }
 
 
@@ -508,6 +707,7 @@ def handle_github_event(
     delivery_id: str,
     raw_signature: str,
     raw_body: bytes,
+    intake_sink=None,
 ) -> DispatchResult:
     """
     Run the full intake pipeline for one GitHub webhook event.
@@ -539,6 +739,16 @@ def handle_github_event(
     verify_signature(request, WEBHOOK_SECRET)
     event = parse_event(request)
     security = evaluate_security(event)
+
+    if (
+        intake_sink is not None
+        and security.decision == SecurityDecision.ALLOW
+        and event.event_type == "issues"
+    ):
+        record = map_issue_to_intake_record(event)
+        if record is not None:
+            append_intake_record(record, intake_sink)
+
     result = dispatch(event, security)
 
     log.info(
