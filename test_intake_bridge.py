@@ -1,4 +1,6 @@
+import tempfile
 import unittest
+from pathlib import Path
 
 import github_carina_gateway as gateway
 
@@ -79,6 +81,46 @@ class IntakeBridgeTests(unittest.TestCase):
 
         with self.assertRaises(gateway.IntakeAuthorizationError):
             gateway.validate_intake_record(record)
+
+    def test_sqlite_intake_ledger_is_append_only_and_idempotent(self):
+        record = gateway.IntakeRecord(
+            record_id="github:owner/repo:issue:7:delivery-7",
+            phase=gateway.IntakePhase.INTENT,
+            repo_full_name="owner/repo",
+            issue_number=7,
+            issue_title="[Idea]: Durable intake",
+            issue_body="evidence",
+            issue_url="https://example.test/7",
+            actor="builder",
+            delivery_id="delivery-7",
+        )
+        payload = gateway.serialize_intake_record(record)
+
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = gateway.SQLiteIntakeLedger(Path(directory) / "intake.sqlite3")
+            self.assertTrue(ledger.append(payload))
+            self.assertFalse(ledger.append(payload))
+
+            rows = ledger.read_all()
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["phase"], "INTENT")
+            self.assertFalse(rows[0]["authorization"]["granted"])
+
+    def test_sqlite_ledger_rejects_authorized_payload(self):
+        payload = {
+            "record_id": "malicious",
+            "record_type": "github_intake",
+            "phase": "AUTHORIZED",
+            "read_only": False,
+            "authorization": {"granted": True, "authority": "github"},
+            "source": {},
+            "content": {},
+        }
+
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = gateway.SQLiteIntakeLedger(Path(directory) / "intake.sqlite3")
+            with self.assertRaises(gateway.IntakeAuthorizationError):
+                ledger.append(payload)
 
     def test_non_intake_issue_is_ignored(self):
         event = gateway.ParsedEvent(
