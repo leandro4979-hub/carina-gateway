@@ -790,6 +790,7 @@ def handle_github_event(
     raw_signature: str,
     raw_body: bytes,
     intake_sink=None,
+    webhook_secret: str | None = None,
 ) -> DispatchResult:
     """
     Run the full intake pipeline for one GitHub webhook event.
@@ -818,7 +819,7 @@ def handle_github_event(
         raw_body=raw_body,
     )
 
-    verify_signature(request, WEBHOOK_SECRET)
+    verify_signature(request, webhook_secret or WEBHOOK_SECRET)
     event = parse_event(request)
     security = evaluate_security(event)
 

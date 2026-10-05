@@ -84,3 +84,30 @@ CI runs both commands on pull requests and pushes to `main`.
 - Signature verification uses HMAC-SHA256 and constant-time comparison.
 - Unknown events default to `DENY`.
 - GitHub intake records are immutable evidence; they are not approval tokens.
+
+
+## Run the webhook receiver
+
+The included receiver is localhost-first and fails closed if no webhook secret is configured.
+
+```bash
+export GITHUB_WEBHOOK_SECRET='replace-with-a-strong-random-secret'
+export CARINA_GATEWAY_HOST='127.0.0.1'
+export CARINA_GATEWAY_PORT='51002'
+export CARINA_INTAKE_LEDGER_PATH="$HOME/.carina/github-intake.sqlite3"
+
+python carina_gateway_server.py
+```
+
+Endpoints:
+
+```text
+GET  /health
+POST /github/webhook
+```
+
+The receiver deliberately exposes **no authorization endpoint**.
+
+To receive GitHub.com webhooks, the receiver must be reachable from GitHub over HTTPS through infrastructure you control (for example, a reverse proxy or secure tunnel). Configure the repository webhook to send **Issues** events to `/github/webhook` and use the exact same secret as `GITHUB_WEBHOOK_SECRET`.
+
+Do not expose the SQLite file or the CARINA control service directly to the public internet.
