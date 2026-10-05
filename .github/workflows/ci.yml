@@ -16,5 +16,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Run tests
+      - name: Run intake contract tests
         run: python -m unittest discover -p "test*.py" -v
+      - name: Run legacy gateway pipeline suite
+        run: python test_gateway.py
