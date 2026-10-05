@@ -16,7 +16,13 @@ import hashlib
 import sys
 from uuid import uuid4
 
-# Import the gateway components
+# Configure environment before importing the gateway because its constants are
+# intentionally captured at module import time.
+WEBHOOK_SECRET = "super-secret-key"
+os.environ["GITHUB_WEBHOOK_SECRET"] = WEBHOOK_SECRET
+os.environ["MOCK_SIG_FAILURE"] = "0"
+
+# Import the gateway components only after test configuration is installed.
 try:
     from github_carina_gateway import (
         handle_github_event,
@@ -30,13 +36,6 @@ try:
 except ImportError:
     print("Error: Could not import from github_carina_gateway. Make sure the file exists.")
     sys.exit(1)
-
-# Configuration for the tests
-WEBHOOK_SECRET = "super-secret-key"
-os.environ["GITHUB_WEBHOOK_SECRET"] = WEBHOOK_SECRET
-
-# Disable mock signature failures for real testing
-os.environ["MOCK_SIG_FAILURE"] = "0"
 
 
 def generate_signature(payload_bytes: bytes, secret: str) -> str:
