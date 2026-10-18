@@ -16,13 +16,13 @@ import hashlib
 import sys
 from uuid import uuid4
 
-# Configure the module BEFORE importing github_carina_gateway.
-# github_carina_gateway reads these environment values at import time.
+# Configure environment before importing the gateway because its constants are
+# intentionally captured at module import time.
 WEBHOOK_SECRET = "super-secret-key"
 os.environ["GITHUB_WEBHOOK_SECRET"] = WEBHOOK_SECRET
 os.environ["MOCK_SIG_FAILURE"] = "0"
 
-# Import the gateway components
+# Import the gateway components only after test configuration is installed.
 try:
     from github_carina_gateway import (
         handle_github_event,
