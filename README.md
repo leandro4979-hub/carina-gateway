@@ -111,3 +111,84 @@ The receiver deliberately exposes **no authorization endpoint**.
 To receive GitHub.com webhooks, the receiver must be reachable from GitHub over HTTPS through infrastructure you control (for example, a reverse proxy or secure tunnel). Configure the repository webhook to send **Issues** events to `/github/webhook` and use the exact same secret as `GITHUB_WEBHOOK_SECRET`.
 
 Do not expose the SQLite file or the CARINA control service directly to the public internet.
+
+## Provider router
+
+The provider order is:
+
+```text
+Ollama (local)
+  -> Groq
+  -> Cerebras
+  -> OpenRouter
+```
+
+Gemini is also registered when configured and is eligible for vision-capability requests.
+
+The router only falls through on retryable failures such as HTTP 429, 5xx, timeout, or network errors. Authentication failures, other client errors, malformed JSON, and invalid provider responses fail closed.
+
+### Environment
+
+Ollama is enabled by default:
+
+```bash
+export OLLAMA_URL=http://127.0.0.1:11434
+export OLLAMA_MODEL=gpt-oss:20b
+```
+
+Cloud providers are enabled only when their keys are present:
+
+```bash
+export GROQ_API_KEY=...
+export CEREBRAS_API_KEY=...
+export OPENROUTER_API_KEY=...
+export GEMINI_OPENAI_API_KEY=...
+```
+
+Optional model overrides:
+
+```bash
+export GROQ_MODEL=openai/gpt-oss-120b
+export CEREBRAS_MODEL=gpt-oss-120b
+export OPENROUTER_MODEL=openai/gpt-oss-20b:free
+export GEMINI_MODEL=gemini-2.5-flash
+```
+
+Never commit provider keys to the repository.
+
+### Test
+
+```bash
+python3 -m unittest -v test_model_router.py
+```
+
+The first batch tests success, 429/5xx fallback, fatal 401 handling, verification failures, aggregate retryable failures, and capability routing.
+
+
+## Persistent HTTP gateway
+
+The branch also contains a standard-library HTTP server:
+
+```bash
+export CARINA_GATEWAY_TOKEN=dev-local-secret
+export GITHUB_WEBHOOK_SECRET=dev-github-secret
+python3 carina_server.py
+```
+
+Default listener:
+
+```text
+http://127.0.0.1:51001
+```
+
+Health check:
+
+```bash
+curl -i http://127.0.0.1:51001/health
+```
+
+Server tests:
+
+```bash
+python3 -m unittest -v test_carina_server.py
+```
